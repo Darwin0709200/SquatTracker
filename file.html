@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Fitness Trainer</title>
+
+    <!-- PWA Settings (Makes it look like an App) -->
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#1a1a1a">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💪</text></svg>">
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MediaPipe Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: white;
+            overflow: hidden;
+            overscroll-behavior: none; /* Prevents pull-to-refresh on mobile */
+        }
+        canvas {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+        }
+        .video-input {
+            display: none;
+        }
+        .ui-layer {
+            position: absolute;
+            z-index: 10;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .glass-panel {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            border-radius: 12px;
+            pointer-events: auto;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        /* Pulse animation for recording/active state */
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 0, 0, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }
+        }
+        .recording-dot {
+            width: 12px;
+            height: 12px;
+            background-color: red;
+            border-radius: 50%;
+            animation: pulse-red 2s infinite;
+            display: inline-block;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body class="font-sans antialiased h-screen w-screen relative select-none">
+
+    <!-- Video Source (Hidden) -->
+    <video class="video-input" playsinline></video>
+
+    <!-- Canvas Output (Visible) -->
+    <canvas class="output_canvas"></canvas>
+
+    <!-- UI Overlay -->
+    <div class="ui-layer p-4 safe-area-inset">
+        
+        <!-- Header: Stats -->
+        <div class="flex justify-between items-start gap-2">
+            <div class="glass-panel p-3 flex flex-col items-center flex-1">
+                <span class="text-[10px] text-gray-400 uppercase tracking-wider">Reps</span>
+                <span class="text-3xl font-bold text-green-400" id="rep-count">0</span>
+            </div>
+
+            <div class="glass-panel p-3 flex flex-col items-center flex-1">
+                <span class="text-[10px] text-gray-400 uppercase tracking-wider">Form</span>
+                <span class="text-lg font-bold text-blue-400" id="form-check">OK</span>
+            </div>
+
+            <div class="glass-panel p-3 flex flex-col items-center flex-1">
+                 <span class="text-[10px] text-gray-400 uppercase tracking-wider">Total</span>
+                 <span class="text-lg font-bold text-purple-400" id="total-history">0</span>
+            </div>
+        </div>
+
+        <!-- Center: Feedback Messages -->
+        <div class="flex-grow flex items-center justify-center pointer-events-none">
+            <div id="feedback-box" class="hidden bg-black/80 px-6 py-4 rounded-xl backdrop-blur-md transition-all duration-200 border border-white/10">
+                <h2 id="feedback-text" class="text-4xl font-black text-white text-center tracking-wide drop-shadow-lg">
+                    STAND BACK
+                </h2>
+            </div>
+        </div>
+
+        <!-- Bottom: Controls -->
+        <div class="w-full pb-8">
+            <!-- Loading Indicator -->
+            <div id="loading-indicator" class="text-center mb-4 bg-black/50 p-2 rounded-lg backdrop-blur-sm inline-block w-full">
+                <div class="inline-block animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-green-500 align-middle mr-2"></div>
+                <span class="text-sm text-gray-300 align-middle">Loading AI Vision...</span>
+            </div>
+
+            <div class="glass-panel p-4 flex justify-between items-center">
+                <div class="flex flex-col">
+                    <div class="flex items-center mb-1">
+                        <div class="recording-dot"></div>
+                        <h3 class="font-bold text-sm">Squat Tracker</h3>
+                    </div>
+                    <p class="text-[10px] text-gray-400">Ensure full body is visible</p>
+                </div>
+                
+                <div class="flex gap-3">
+                     <button onclick="toggleVoice()" id="voice-btn" class="p-3 bg-gray-700/80 rounded-full active:scale-95 transition backdrop-blur-sm border border-white/10">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
+                    </button>
+                    <button onclick="resetCounter()" class="p-3 bg-red-600/80 rounded-full active:scale-95 transition backdrop-blur-sm border border-white/10">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration ---
+        const CONFIG = {
+            squatDepthThreshold: 105, // Easier to hit for beginners
+            standUpThreshold: 165,    
+            visibilityThreshold: 0.6,
+            correctionCooldown: 2500,
+        };
+
+        // --- State ---
+        let state = {
+            reps: 0,
+            stage: 'UP',
+            lastFeedbackTime: 0,
+            voiceEnabled: true,
+            isModelLoaded: false,
+            history: parseInt(localStorage.getItem('squatHistory') || '0')
+        };
+
+        // --- Elements ---
+        const videoElement = document.getElementsByClassName('video-input')[0];
+        const canvasElement = document.getElementsByClassName('output_canvas')[0];
+        const canvasCtx = canvasElement.getContext('2d');
+        const repDisplay = document.getElementById('rep-count');
+        const feedbackBox = document.getElementById('feedback-box');
+        const feedbackText = document.getElementById('feedback-text');
+        const loadingInd = document.getElementById('loading-indicator');
+        const formDisplay = document.getElementById('form-check');
+        const historyDisplay = document.getElementById('total-history');
+        const voiceBtn = document.getElementById('voice-btn');
+
+        historyDisplay.innerText = state.history;
+
+        // --- Audio ---
+        const synth = window.speechSynthesis;
+        const speak = (text) => {
+            if (!state.voiceEnabled || !synth) return;
+            const now = Date.now();
+            // Prioritize rep counts, throttle generic feedback
+            if (text.length > 3 && now - state.lastFeedbackTime < CONFIG.correctionCooldown) return;
+            if (text.length > 3) state.lastFeedbackTime = now;
+
+            // Cancel current speech to say new thing immediately
+            synth.cancel();
+            
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 1.2;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+            synth.speak(utterance);
+        };
+
+        function toggleVoice() {
+            state.voiceEnabled = !state.voiceEnabled;
+            voiceBtn.className = state.voiceEnabled 
+                ? "p-3 bg-green-600/80 rounded-full active:scale-95 transition backdrop-blur-sm border border-white/10"
+                : "p-3 bg-gray-700/80 rounded-full active:scale-95 transition backdrop-blur-sm border border-white/10";
+            if(state.voiceEnabled) speak("Voice on");
+        }
+
+        function resetCounter() {
+            state.reps = 0;
+            state.stage = 'UP';
+            repDisplay.innerText = 0;
+            speak("Reset");
+        }
+
+        function showFeedback(text, colorClass = "text-white") {
+            feedbackBox.classList.remove('hidden');
+            feedbackText.className = `text-4xl font-black text-center tracking-wide drop-shadow-lg ${colorClass}`;
+            feedbackText.innerText = text;
+            
+            clearTimeout(window.feedbackTimeout);
+            window.feedbackTimeout = setTimeout(() => {
+                if(state.stage === 'UP') feedbackBox.classList.add('hidden');
+            }, 1500);
+        }
+
+        function calculateAngle(a, b, c) {
+            const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+            let angle = Math.abs(radians * 180.0 / Math.PI);
+            if (angle > 180.0) angle = 360 - angle;
+            return angle;
+        }
+
+        function onResults(results) {
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+
+            if (!state.isModelLoaded) {
+                state.isModelLoaded = true;
+                loadingInd.style.display = 'none';
+                speak("Camera ready. Step back.");
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Draw darkened video
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                // Draw simplified skeleton
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS,
+                             {color: 'rgba(0, 255, 0, 0.6)', lineWidth: 4});
+                
+                const lm = results.poseLandmarks;
+                
+                // Use Left Leg (23, 25, 27) and Right Leg (24, 26, 28)
+                // We pick the one with better visibility
+                let hip, knee, ankle;
+                
+                if (lm[25].visibility > lm[26].visibility) {
+                    hip = lm[23]; knee = lm[25]; ankle = lm[27]; // Left
+                } else {
+                    hip = lm[24]; knee = lm[26]; ankle = lm[28]; // Right
+                }
+
+                if (knee.visibility > CONFIG.visibilityThreshold) {
+                    const angle = calculateAngle(hip, knee, ankle);
+                    
+                    // Visual Angle Indicator
+                    canvasCtx.fillStyle = 'white';
+                    canvasCtx.font = 'bold 40px sans-serif';
+                    canvasCtx.fillText(Math.round(angle) + "°", knee.x * canvasElement.width + 30, knee.y * canvasElement.height);
+
+                    // Form Logic
+                    if (angle > CONFIG.standUpThreshold) {
+                        if (state.stage === "DOWN") {
+                            // Completed a rep
+                        }
+                        state.stage = "UP";
+                        formDisplay.innerText = "STAND";
+                        formDisplay.className = "text-lg font-bold text-gray-400";
+                    }
+                    
+                    if (angle < CONFIG.squatDepthThreshold && state.stage === 'UP') {
+                        state.stage = "DOWN";
+                        state.reps += 1;
+                        state.history += 1;
+                        
+                        repDisplay.innerText = state.reps;
+                        historyDisplay.innerText = state.history;
+                        localStorage.setItem('squatHistory', state.history);
+                        
+                        showFeedback("GOOD!", "text-green-400");
+                        speak(state.reps.toString());
+                        
+                        // Flash screen green slightly
+                        canvasCtx.fillStyle = 'rgba(0, 255, 0, 0.2)';
+                        canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+                    } else if (angle < 135 && angle > CONFIG.squatDepthThreshold && state.stage === 'UP') {
+                        formDisplay.innerText = "LOWER";
+                        formDisplay.className = "text-lg font-bold text-yellow-400";
+                        // Don't spam voice here, visual only until timeout
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        // Initialize
+        (async function() {
+            try {
+                await camera.start();
+            } catch(e) {
+                console.error(e);
+                alert("Camera error: Please allow camera permissions.");
+            }
+        })();
+    </script>
+</body>
+</html>
